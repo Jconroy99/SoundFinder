@@ -57,20 +57,14 @@ loudness = song_input[0]['loudness']
 speechiness = song_input[0]['speechiness']
 tempo = song_input[0]['tempo']
 
-print(track_features[2][0]['acousticness'])
-print(acousticness)
-
 #Comparing acousticness loop:
 acous_list = []
 for i in range(100):
     if track_features[i][0]['acousticness'] >= (acousticness - 0.1) and track_features[i][0]['acousticness'] <= (acousticness + 0.1):
         acous_list.append(track_features[i])
-        print('success')
-    else:
-        print(track_features[i])
 
 acous_len = len(acous_list)
-print(acous_len)
+
 # dance_list = []
 # for i in range(acous_len):
 #     if acous_list[i]['danceability'] >= (danceability - 0.1) and acous_list[i]['danceability'] <= (danceability + 0.1):
