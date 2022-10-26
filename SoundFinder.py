@@ -1,5 +1,3 @@
-from dis import Instruction
-from types import TracebackType
 import pandas as pd 
 import sqlite3
 from pathlib import Path
@@ -8,113 +6,116 @@ from spotipy.oauth2 import SpotifyClientCredentials
 from dotenv import load_dotenv
 import os
 
-load_dotenv()
-#Environment variables: create .env file and store your id and secrets under these variable names
-CLIENT_ID = os.getenv('CLIENT_ID')
-CLIENT_SECRET = os.getenv('CLIENT_SECRET')
+def main():
+    load_dotenv()
+    '''Environment variables: create .env file and store your id and secrets under these variable names'''
+    CLIENT_ID = os.getenv('CLIENT_ID')
+    CLIENT_SECRET = os.getenv('CLIENT_SECRET')
 
-#Connection to spotify API via your own credentials
-auth_manager = SpotifyClientCredentials(client_id = CLIENT_ID, client_secret = CLIENT_SECRET)
-sp = spotipy.Spotify(auth_manager=auth_manager)
+    spotify_client = SpotifyAuth(CLIENT_ID, CLIENT_SECRET)
+    connection, cur = db_connection('Spotify.db') #db_name??
 
-#Creating and connecting to database and creating cursor object
-Path('Spotify.db').touch()
-conn = sqlite3.connect('Spotify.db')
-c = conn.cursor()
+    logic_controller(spotify_client,connection,cur)
+    connection.close()
 
-#Creating dataframe from csv file and then uploading it to sql database as a table
-charts_df = pd.read_csv('charts.csv')
-charts_df.to_sql('spotify_table',conn, if_exists='replace')
+def logic_controller(spotify_client,connection,cur):
+        path_determiner = input('Have you ran this program already? type y/n (changing countries enter n)\n')
+        '''Define variables for inputted song's features for comparison'''
+        song_link = input("What song do you want the recommendations to be based on? (provide song link)\n")
+        song_input = spotify_client.audio_features(f'{song_link}')
 
-#SQL queries to modify table based on region (will customize in the future to have region as input or something)
-sql_query_delete = 'DELETE FROM spotify_table WHERE region!="United States"'
-c.execute(sql_query_delete)
-conn.commit()
+        if path_determiner == 'y':
+            song_recommendations = recommendations(song_input,cur)
+            print(song_recommendations)
+            return(song_recommendations)
+        elif path_determiner == 'n':
+            csv_to_df('charts.csv',connection) #again name?? Need quotes?
+            db_url_select_by_region(spotify_client,connection,cur)
+            
+            song_recommendations = recommendations(song_input,cur)
+            print(song_recommendations)
+            return song_recommendations
+        else:
+            return
 
-#SQL query for every URL and storing it in list urls_slices and close connection
-sql_select = 'Select url FROM spotify_table'
+def SpotifyAuth(CLIENT_ID, CLIENT_SECRET):
+    '''Connection to spotify API via your own credentials'''
+    auth_manager = SpotifyClientCredentials(client_id = CLIENT_ID, client_secret = CLIENT_SECRET)
+    spotify_client = spotipy.Spotify(auth_manager=auth_manager)
+    return spotify_client
 
-#This returns list of tuples e.g., [('url1',) (url2,)]
-song_rows = c.execute(sql_select).fetchall()
+def db_connection(db_name):
+    '''Creating and connecting to database and creating cursor object'''
+    Path(db_name).touch()
+    connection = sqlite3.connect(db_name)
+    cur = connection.cursor()
+    return connection, cur
 
-#List comprehension to flatten rows into list of urls i.e., [url1, url2,...]
-urls_list = [row[0] for row in song_rows]
+def csv_to_df(csv_file,connection):
+    '''Creating dataframe from csv file and then uploading it to sql database as a table'''
+    charts_df = pd.read_csv(csv_file)
+    charts_df.to_sql('spotify_table',connection,if_exists='replace')
 
-#List comprehension to return a
-#list of batches of 100 urls (or slices) that is passed to audio_features()
-urls_list_len = len(urls_list)
-urls_slices = [urls_list[i:i+100] for i in range(0,urls_list_len,100)]
+def db_url_select_by_region(spotify_client,connection,cur):
+    region_selection = input('What country do you want to sort by? (eg. United States,United Kingdom)\n')
+    query_select = f'Select url FROM spotify_table WHERE region ="{region_selection}"'
 
+    '''This returns list of tuples e.g., [('url1',) (url2,)]'''
+    song_rows = cur.execute(query_select).fetchall()
 
-#Iterate through each batch of 100 song urls and get audio features
-urls_len = len(urls_slices)
+    '''List comprehension to flatten rows into list of urls i.e., [url1, url2,...]'''
+    urls_list = [row[0] for row in song_rows]
 
-#List of dictionaries of audio features 
-track_features = [track_feature for urls_slice in urls_slices for track_feature in sp.audio_features(urls_slice)]
+    '''List comprehension to return a list of batches of 100 urls (or slices) '''
+    urls_list_len = len(urls_list)
+    urls_slices = [urls_list[i:i+100] for i in range(0,urls_list_len,100)]
 
-#Define global variables for inputted song's features for comparison (will eventually take as input from user)
-song_link = 'https://open.spotify.com/track/02shCNmb6IvgB5jLqKjtkK?si=a35c6a01bc91447d'
-song_input = sp.audio_features(song_link)
+    '''Iterate through each batch of 100 song urls and get audio features
+        List of dictionaries of audio features''' 
+    track_features = [track_feature for urls_slice in urls_slices for track_feature in spotify_client.audio_features(urls_slice)]
+    '''Create table of Spotify features to avoid calling again'''
+    create_track_features_table(track_features,connection,cur)
 
-acousticness = song_input[0]['acousticness']
-danceability = song_input[0]['danceability']
-energy = song_input[0]['energy']
-mode = song_input[0]['mode']
-valence = song_input[0]['valence']
-instrumetalness = song_input[0]['instrumentalness']
-liveness = song_input[0]['liveness']
-loudness = song_input[0]['loudness']
-speechiness = song_input[0]['speechiness']
-tempo = song_input[0]['tempo']
+def create_track_features_table(track_features,connection,cur):
+    cur.execute('''CREATE TABLE IF NOT EXISTS spotify_features_table (
+        uri TEXT,
+        acousticness REAL,
+        danceability REAL,
+        energy REAL,
+        valence REAL,
+        instrumentalness REAL,
+        speechiness REAL,
+        tempo REAL)''')
+    cur.executemany("""
+    INSERT OR REPLACE INTO 
+        spotify_features_table
+        (uri, acousticness, danceability, energy, valence, instrumentalness, speechiness, tempo)
+    VALUES
+        (:uri, :acousticness, :danceability, :energy, :valence, :instrumentalness, :speechiness, :tempo)
+    """, track_features)
+    connection.commit()
 
-#Comparing acousticness loop:
-acous_list = []
-for track in track_features:
-    if track['acousticness'] >= (acousticness - 0.1) and track['acousticness'] <= (acousticness + 0.1):
-        acous_list.append(track)
-print(len(acous_list))
+def recommendations(song_input,cur):
+    acous_input = song_input[0]['acousticness']
+    dance_input = song_input[0]['danceability']
+    energy_input = song_input[0]['energy']
+    val_input = song_input[0]['valence']
+    instrumental_input = song_input[0]['instrumentalness']
+    speech_input = song_input[0]['speechiness']
+    tempo_input = song_input[0]['tempo']
 
-#Comparing danceability:
-dance_list = []
-for track in acous_list:
-    if track['danceability'] >= (danceability - 0.1) and track['danceability'] <= (danceability + 0.1):
-        dance_list.append(track)
-print(len(dance_list))
+    query_vars = (acous_input,dance_input,energy_input,val_input,instrumental_input,speech_input,tempo_input)
+    sql_recommendations_query = '''SELECT uri FROM spotify_features_table WHERE
+    acousticness >= :acous_input-0.1 AND acousticness <= :acous_input+0.1 AND
+    danceability >= :dance_input-0.1 AND danceability <= :dance_input+0.1 AND
+    energy >= :energy_input-0.1 AND energy <= :energy_input+0.1 AND
+    valence >= :val_input-0.1 AND valence <= :val_input+0.1 AND
+    instrumentalness >= :instrumental_input-0.3 AND instrumentalness <= :instrumental_input+0.3 AND
+    speechiness >= :speech_input-0.1 AND speechiness <= :speech_input+0.1 AND
+    tempo >= :tempo_input-10 AND tempo <= :tempo_input+10'''
+    song_recs = cur.execute(sql_recommendations_query,query_vars).fetchall()
+    song_recs_collapsed = set([song_rec[0] for song_rec in song_recs])
+    return song_recs_collapsed
 
-#Comparing energy:
-energy_list = []
-for track in dance_list:
-    if track['energy'] >= (energy - 0.1) and track['energy'] <= (energy + 0.1):
-        energy_list.append(track)
-print(len(energy_list))
-
-# #Comparing valence:
-# valence_list = []
-# for track in energy_list:
-#     if track['valence'] >= (valence - 0.1) and track['valence'] <= (valence + 0.1):
-#         valence_list.append(track)
-# print(len(valence_list))
-
-#Comparing instrumentalness:
-instrumetalness_list = []
-for track in energy_list:
-    if track['instrumentalness'] >= (instrumetalness - 0.3) and track['instrumentalness'] <= (instrumetalness + 0.3):
-        instrumetalness_list.append(track)
-print(len(instrumetalness_list))
-
-#Comparing speechiness:
-speechiness_list = []
-for track in instrumetalness_list:
-    if track['speechiness'] >= (speechiness - 0.1) and track['speechiness'] <= (speechiness + 0.1):
-        speechiness_list.append(track)
-print(len(speechiness_list))
-
-#Comparing tempo:
-tempo_list = []
-for track in speechiness_list:
-    if track['tempo'] >= (tempo - 10) and track['tempo'] <= (tempo + 10):
-        tempo_list.append(track)
-print(len(tempo_list))
-print(tempo_list)
-
-
+if __name__ == '__main__':   
+    main()
